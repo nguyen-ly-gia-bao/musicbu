@@ -1,4 +1,4 @@
-name: Radio MP3 (unlimited + daily reset + versioned files + now/history)
+name: Radio MP3 (permanent random link)
 
 on:
   workflow_dispatch:
@@ -11,11 +11,11 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages-radio"
+  group: "musicbu-radio"
   cancel-in-progress: true
 
 jobs:
-  rotate:
+  radio:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -24,39 +24,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      # --- Reset lịch sử mỗi 24h ---
-      - name: Daily reset (clear play history every 24h)
-        shell: bash
-        run: |
-          set -euo pipefail
-          STATE=".radio_state.json"
-          HIST=".radio_history.json"
-          NOW=$(date +%s)
-          [ -s "$STATE" ] || echo '{"last_reset":0}' > "$STATE"
-          [ -s "$HIST"  ] || echo '[]' > "$HIST"
-          LAST_RESET=$(jq -r '.last_reset // 0' "$STATE")
-          if [ $((NOW - LAST_RESET)) -ge 86400 ]; then
-            echo '[]' > "$HIST"
-            jq --argjson now "$NOW" '.last_reset=$now' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
-            git config user.name  "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add "$STATE" "$HIST"
-            git commit -m "radio: daily reset history" || true
-            git push || true
-          fi
-
-      # --- Chọn bài (ưu tiên bài mới, tránh lặp ngay) ---
-      - name: Pick track (prefer NEW, avoid immediate repeat)
+      # chọn 1 bài ngẫu nhiên từ playlist (ưu tiên bài chưa phát, tránh lặp ngay)
+      - name: Pick random track
         id: pick
         shell: bash
         run: |
           set -euo pipefail
           FILE="playlist.txt"
-          [ ! -f "$FILE" ] && { echo "playlist.txt not found"; exit 1; }
+          [ -f "$FILE" ] || { echo "playlist.txt not found"; exit 1; }
+
           HIST=".radio_history.json"; [ -s "$HIST" ] || echo '[]' > "$HIST"
           LAST_URL=$(jq -r '.[-1].url // ""' "$HIST")
+
           mapfile -t LINES < <(grep -ve '^[[:space:]]*$' "$FILE")
-          [ ${#LINES[@]} -lt 1 ] && { echo "playlist is empty"; exit 1; }
+          [ ${#LINES[@]} -gt 0 ] || { echo "playlist empty"; exit 1; }
 
           get_url(){ echo "$1" | cut -d'|' -f1 | xargs; }
           get_dur(){ echo "$1" | cut -d'|' -f2 | xargs || true; }
@@ -64,14 +45,14 @@ jobs:
           mapfile -t PLAYED < <(jq -r '.[].url' "$HIST")
           NEW_POOL=()
           for L in "${LINES[@]}"; do
-            U=$(get_url "$L"); F=0
-            for P in "${PLAYED[@]}"; do [ "$U" = "$P" ] && F=1 && break; done
-            [ $F -eq 0 ] && NEW_POOL+=("$L")
+            U=$(get_url "$L"); HIT=0
+            for P in "${PLAYED[@]}"; do [ "$U" = "$P" ] && HIT=1 && break; done
+            [ $HIT -eq 0 ] && NEW_POOL+=("$L")
           done
 
           choose(){
             local -a P=("$@"); local N=${#P[@]}
-            [ $N -eq 0 ] && return 1
+            [ $N -gt 0 ] || return 1
             if [ $N -gt 1 ] && [ -n "$LAST_URL" ]; then
               T=(); for L in "${P[@]}"; do [ "$(get_url "$L")" = "$LAST_URL" ] && continue; T+=("$L"); done
               [ ${#T[@]} -gt 0 ] && P=("${T[@]}"); N=${#P[@]}
@@ -82,10 +63,10 @@ jobs:
           LINE=""
           [ ${#NEW_POOL[@]} -gt 0 ] && LINE="$(choose "${NEW_POOL[@]}")"
           [ -z "$LINE" ] && LINE="$(choose "${LINES[@]}")"
-          [ -z "$LINE" ] && { echo "Cannot pick track"; exit 1; }
+          [ -z "$LINE" ] && { echo "cannot pick line"; exit 1; }
 
           URL=$(get_url "$LINE")
-          DUR_RAW=$(get_dur "$LINE")
+          RAW=$(get_dur "$LINE")
 
           to_sec(){
             local S="$1"; local DEF=180
@@ -96,63 +77,45 @@ jobs:
             if [[ "$H" = 0 && "$M" = 0 && "$X" = 0 ]]; then echo "$S"; else echo $((H*3600+M*60+X)); fi
           }
 
-          DURATION=$(to_sec "$DUR_RAW"); [ "$DURATION" -lt 30 ] && DURATION=30
-
+          DUR=$(to_sec "$RAW"); [ "$DUR" -lt 30 ] && DUR=30
           echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
-          echo "dur_str=${DUR_RAW:-180s}" >> "$GITHUB_OUTPUT"
+          echo "dur=$DUR" >> "$GITHUB_OUTPUT"
+          echo "dur_str=${RAW:-180s}" >> "$GITHUB_OUTPUT"
 
-      # --- Tải bài, lưu filename theo thời gian + current.mp3, render index + now.json ---
-      - name: Build site (versioned filename + stable current.mp3 + now.json)
+      # tải bài, GHI ĐÈ current.mp3 (điểm mấu chốt để có link vĩnh viễn)
+      - name: Build artifact (create stable current.mp3)
         shell: bash
         run: |
           set -euo pipefail
           TS=$(date -u +%Y%m%d-%H%M%S)
           NEW="track-${TS}.mp3"
           mkdir -p public/f
-          echo "Downloading to public/f/${NEW}"
           curl -L --fail --retry 3 "${{ steps.pick.outputs.url }}" -o "public/f/${NEW}"
+          cp -f "public/f/${NEW}" "public/f/current.mp3"   # <<— file ổn định
 
-          # Link ổn định cho nhúng/IMVU
-          cp -f "public/f/${NEW}" "public/f/current.mp3"
-
-          # Giữ tối đa 10 file version
+          # giữ tối đa 10 file track-* cho gọn repo
           ls -1t public/f/track-*.mp3 2>/dev/null | awk 'NR>10' | xargs -r rm -f
 
-          # Trang chính
+          # trang chính + now.json
+          BASE="/musicbu"
           cat > public/index.html <<HTML
-          <!doctype html>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
           <title>musicbu radio</title>
           <h1>musicbu radio</h1>
-          <p><b>Now playing</b>: <code>${NEW}</code> (${{
-            steps.pick.outputs.dur_str
-          }})</p>
-          <p><a href="./f/current.mp3">🎵 Direct MP3 (stable)</a></p>
-          <p><a href="./history.html">📜 History</a> · <a href="./now.json">now.json</a> · <a href="./history.json">history.json</a></p>
-          <h3>Recent files</h3>
+          <p><b>Now playing</b>: <code>${NEW}</code> (${{ steps.pick.outputs.dur_str }})</p>
+          <p><a href="./f/current.mp3">🎵 Direct MP3 (stable)</a> · <a href="./history.html">📜 History</a></p>
           <ul>
           $(for f in $(ls -1t public/f/track-*.mp3 2>/dev/null | head -10); do b=$(basename "$f"); echo "<li><a href=\"./f/$b\">$b</a></li>"; done)
           </ul>
-          <style>
-            body{font-family:system-ui,Segoe UI,Roboto,Arial;padding:24px;max-width:760px;margin:auto}
-            code{background:#1113;border-radius:6px;padding:2px 6px}
-            a{text-decoration:none}
-          </style>
           HTML
 
-          # now.json (API công khai)
-          BASE="/musicbu" # đổi nếu repo không phải musicbu
           cat > public/now.json <<JSON
-          {
-            "file": "${NEW}",
-            "stable_url": "${BASE}/f/current.mp3",
-            "source_url": "${{ steps.pick.outputs.url }}",
-            "duration_seconds": ${{ steps.pick.outputs.duration }},
-            "duration_str": "${{ steps.pick.outputs.dur_str }}",
-            "started_at": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          }
+          {"file":"${NEW}",
+           "stable_url":"${BASE}/f/current.mp3",
+           "source_url":"${{ steps.pick.outputs.url }}",
+           "duration_seconds":${{ steps.pick.outputs.dur }},
+           "duration_str":"${{ steps.pick.outputs.dur_str }}",
+           "started_at":"$(date -u +'%Y-%m-%dT%H:%M:%SZ')"}
           JSON
 
       - uses: actions/upload-pages-artifact@v3
@@ -160,82 +123,58 @@ jobs:
           path: ./public
 
       - uses: actions/deploy-pages@v4
-        id: deploy
 
-      # --- Lưu history (repo) và xuất public history.json + history.html ---
-      - name: Update play history (repo + public JSON/HTML)
+      # cập nhật lịch sử + xuất history.json/html
+      - name: Update history
         shell: bash
         run: |
           set -euo pipefail
-          U="${{ steps.pick.outputs.url }}"
-          D="${{ steps.pick.outputs.duration }}"
-          HIST=".radio_history.json"
-          [ -s "$HIST" ] || echo '[]' > "$HIST"
-          jq --arg url "$U" --arg dur "$D" --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+          HIST=".radio_history.json"; [ -s "$HIST" ] || echo '[]' > "$HIST"
+          jq --arg url "${{ steps.pick.outputs.url }}" \
+             --arg dur "${{ steps.pick.outputs.dur }}" \
+             --arg ts  "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
              '. + [{"url":$url,"duration":($dur|tonumber),"ts":$ts}] | (length>200 ? .[length-200:] : .)' \
              "$HIST" > "$HIST.tmp" && mv "$HIST.tmp" "$HIST"
 
-          # commit lịch sử trong repo (ưu tiên bài mới hoạt động)
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$HIST"
-          git commit -m "Played $U" || true
-          git push || true
+          git add "$HIST"; git commit -m "Played ${{ steps.pick.outputs.url }}" || true; git push || true
 
-          # xuất bản public/history.json + history.html
           mkdir -p public
           cp "$HIST" public/history.json
           cat > public/history.html <<'HTML'
-          <!doctype html>
-          <meta charset="utf-8">
-          <title>musicbu – History</title>
+          <!doctype html><meta charset="utf-8"><title>musicbu – History</title>
           <h1>musicbu – 50 recent plays</h1>
-          <p><a href="./">← Back to Now Playing</a> · <a href="./history.json">history.json</a></p>
+          <p><a href="./">← Back</a> · <a href="./history.json">history.json</a></p>
           <table border="1" cellpadding="6" cellspacing="0">
             <thead><tr><th>#</th><th>Time (UTC)</th><th>Duration</th><th>Source URL</th></tr></thead>
-            <tbody>
-            <!-- rows injected by script -->
-            </tbody>
+            <tbody></tbody>
           </table>
-          <style>
-            body{font-family:system-ui,Segoe UI,Roboto,Arial;padding:24px;max-width:1000px;margin:auto}
-            table{border-collapse:collapse;width:100%}
-            th,td{font-size:14px}
-            a{text-decoration:none}
-          </style>
+          <style>body{font-family:system-ui;max-width:950px;margin:auto;padding:24px}table{border-collapse:collapse;width:100%}th,td{font-size:14px}</style>
           <script>
-          fetch('./history.json').then(r=>r.json()).then(data=>{
-            const last50 = data.slice(-50).reverse();
-            const rows = last50.map((it,i)=>(
-              `<tr><td>${i+1}</td><td>${it.ts}</td><td>${it.duration}s</td><td><a href="${it.url}" target="_blank">${it.url}</a></td></tr>`
-            )).join('');
+          fetch('./history.json').then(r=>r.json()).then(d=>{
+            const rows = d.slice(-50).reverse().map((it,i)=>(`<tr><td>${i+1}</td><td>${it.ts}</td><td>${it.duration}s</td><td><a href="${it.url}" target="_blank">${it.url}</a></td></tr>`)).join('');
             document.querySelector('tbody').innerHTML = rows || '<tr><td colspan="4">No data</td></tr>';
           });
           </script>
           HTML
 
-      - name: Upload updated now/history pages
-        uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v3
         with:
           path: ./public
+      - uses: actions/deploy-pages@v4
 
-      - name: Deploy updated now/history pages
-        uses: actions/deploy-pages@v4
-
-      # --- Ngủ đúng thời lượng rồi tự gọi vòng mới ---
-      - name: Sleep until next track
-        run: |
-          echo "Sleeping ${{ steps.pick.outputs.duration }} seconds..."
-          sleep ${{ steps.pick.outputs.duration }}
-
-      - name: Continue next rotation
+      # chờ đúng thời lượng rồi tự quay vòng
+      - name: Sleep & dispatch next
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          echo "Sleeping ${{ steps.pick.outputs.dur }}s..."
+          sleep ${{ steps.pick.outputs.dur }}
           curl -sSL -X POST \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/${GH_REPO}/dispatches \
             -d '{"event_type":"rotate"}'
-          echo "Looping next track..."
+          echo "Queued next rotation."
