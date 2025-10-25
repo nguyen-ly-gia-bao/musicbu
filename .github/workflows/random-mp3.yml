@@ -1,4 +1,4 @@
-name: Radio MP3 (unlimited auto loop, no prompts)
+name: Radio MP3 (unlimited + auto daily reset)
 
 on:
   workflow_dispatch:
@@ -24,7 +24,37 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Pick track (prefer NEW, avoid repeat)
+      - name: Daily reset (clear play history every 24h)
+        id: reset
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATE=".radio_state.json"
+          HIST=".radio_history.json"
+          NOW=$(date +%s)
+
+          # init files if missing
+          [ -s "$STATE" ] || echo '{"last_reset":0}' > "$STATE"
+          [ -s "$HIST" ]  || echo '[]' > "$HIST"
+
+          LAST_RESET=$(jq -r '.last_reset // 0' "$STATE")
+          ELAPSED=$(( NOW - LAST_RESET ))
+
+          echo "Last reset at: $LAST_RESET, elapsed: ${ELAPSED}s"
+
+          if [ "$ELAPSED" -ge 86400 ]; then
+            echo "24h passed → resetting play history."
+            echo '[]' > "$HIST"
+            jq --argjson now "$NOW" '.last_reset = $now' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
+
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add "$STATE" "$HIST"
+            git commit -m "radio: daily reset history" || true
+            git push || true
+          fi
+
+      - name: Pick track (prefer NEW, avoid immediate repeat)
         id: pick
         shell: bash
         run: |
@@ -43,6 +73,7 @@ jobs:
           get_dur () { echo "$1" | cut -d'|' -f2 | xargs || true; }
 
           mapfile -t PLAYED < <(jq -r '.[].url' "$HIST")
+
           NEW_POOL=()
           for L in "${LINES[@]}"; do
             U="$(get_url "$L")"
