@@ -1,4 +1,4 @@
-name: Rotate MP3 (No-Repeat Random) and Deploy
+name: Rotate MP3 (No-Repeat, Skip Dead Links) and Deploy
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
       - 'playlist.txt'
       - '.github/workflows/deploy.yml'
   schedule:
-    - cron: "*/90 * * * *"  # đổi bài mỗi 90 phút (1h30)
+    - cron: "*/90 * * * *"  # đổi bài mỗi 1h30
 
 permissions:
   contents: write
@@ -23,13 +23,13 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pick next track (random among unplayed)
+      - name: Pick and download a LIVE track (random among unplayed)
         id: pick
         shell: bash
         run: |
           set -e
 
-          # 1) Đọc playlist (lọc bỏ dòng trống)
+          # --- Load playlist (strip blank lines)
           if [ ! -s playlist.txt ]; then
             echo "playlist.txt is empty or missing"; exit 1
           fi
@@ -39,7 +39,7 @@ jobs:
             echo "No valid lines in playlist.txt"; exit 1
           fi
 
-          # 2) Đọc danh sách đã phát (played.txt)
+          # --- Build 'unplayed' set using played.txt
           declare -A USED
           if [ -f played.txt ]; then
             while IFS= read -r idx; do
@@ -47,7 +47,6 @@ jobs:
             done < played.txt
           fi
 
-          # 3) Tập các chỉ mục chưa phát
           avail=()
           for ((i=0;i<TOTAL;i++)); do
             if [ -z "${USED[$i]}" ]; then
@@ -55,37 +54,54 @@ jobs:
             fi
           done
 
-          # 4) Nếu đã phát hết -> reset vòng mới
+          # If all played -> reset cycle
           if [ "${#avail[@]}" -eq 0 ]; then
             echo "All tracks were played. Resetting..."
-            : > played.txt   # clear file
+            : > played.txt
             for ((i=0;i<TOTAL;i++)); do avail+=("$i"); done
           fi
 
-          # 5) Random 1 chỉ mục trong 'avail'
-          rnd=$(( RANDOM % ${#avail[@]} ))
-          PICK=${avail[$rnd]}
-          URL="${LINES[$PICK]}"
-
-          echo "Picked index: $PICK"
-          echo "URL: $URL"
-
-          # Xuất cho step kế tiếp
-          echo "index=$PICK" >> $GITHUB_OUTPUT
-          echo "url=$URL" >> $GITHUB_OUTPUT
-
-      - name: Download MP3 to fixed link
-        shell: bash
-        run: |
-          set -e
+          # --- Shuffle 'avail' and try until a LIVE link is found
           mkdir -p public/f
-          echo "Downloading: ${{ steps.pick.outputs.url }}"
-          curl -L "${{ steps.pick.outputs.url }}" -o "public/f/xz8cvuf.mp3"
+          tmpfile="public/f/.tmp_download.mp3"
+          touch "$tmpfile"
 
-      - name: Update played list and commit
+          # Shuffle indices
+          mapfile -t shuffled < <(printf "%s\n" "${avail[@]}" | shuf)
+
+          success=0
+          picked_index=-1
+          for idx in "${shuffled[@]}"; do
+            url="${LINES[$idx]}"
+            echo "Trying index $idx: $url"
+            # --fail: non-2xx = error; -L follow redirects; retries for hiccups
+            if curl --fail -L --retry 2 --retry-delay 2 --max-time 60 \
+               -o "$tmpfile" "$url"; then
+              if [ -s "$tmpfile" ]; then
+                mv -f "$tmpfile" "public/f/xz8cvuf.mp3"
+                success=1
+                picked_index="$idx"
+                echo "Picked LIVE index: $picked_index"
+                break
+              fi
+            else
+              echo "Dead link at index $idx, skipping."
+            fi
+          done
+          rm -f "$tmpfile" || true
+
+          if [ "$success" -ne 1 ]; then
+            echo "No LIVE links found this run. Keeping previous track."
+            exit 0  # do not fail the job; keep old mp3
+          fi
+
+          # Export for next step
+          echo "index=$picked_index" >> "$GITHUB_OUTPUT"
+
+      - name: Update played list and commit (only when success)
+        if: steps.pick.outputs.index != ''
         shell: bash
         run: |
-          set -e
           echo "${{ steps.pick.outputs.index }}" >> played.txt
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
