@@ -1,4 +1,4 @@
-name: MusicBu Cloud Radio (random by duration)
+name: MusicBu Radio – current.mp3 (random & loop)
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
     types: [rotate]
 
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 
@@ -17,42 +17,33 @@ concurrency:
 jobs:
   radio:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Pick 1 random track from playlist
+      - name: Pick 1 random track
         id: pick
         shell: bash
         run: |
           set -euo pipefail
           FILE="playlist.txt"
-          if [ ! -s "$FILE" ]; then
-            echo "playlist.txt không tồn tại hoặc rỗng."; exit 1
-          fi
+          [ -s "$FILE" ] || { echo "playlist.txt is missing/empty"; exit 1; }
 
-          # Lấy 1 dòng ngẫu nhiên
           LINE=$(shuf -n 1 "$FILE")
-
-          # Cắt url | duration
           URL=$(echo "$LINE" | cut -d'|' -f1 | xargs)
           DUR_RAW=$(echo "$LINE" | cut -d'|' -f2 | xargs || true)
+          [ -z "${DUR_RAW:-}" ] && DUR_RAW="30m"
 
-          # Mặc định 30 phút nếu thiếu duration
-          if [ -z "${DUR_RAW:-}" ]; then DUR_RAW="30m"; fi
-
-          # Chuyển về giây (h, m, s)
-          H=$(echo "$DUR_RAW" | grep -oE '[0-9]+h' | tr -d 'h' || true); H=${H:-0}
-          M=$(echo "$DUR_RAW" | grep -oE '[0-9]+m' | tr -d 'm' || true); M=${M:-0}
-          S=$(echo "$DUR_RAW" | grep -oE '[0-9]+s' | tr -d 's' || true); S=${S:-0}
+          H=$(echo "$DUR_RAW" | grep -oE '[0-9]+h' | tr -d h || true); H=${H:-0}
+          M=$(echo "$DUR_RAW" | grep -oE '[0-9]+m' | tr -d m || true); M=${M:-0}
+          S=$(echo "$DUR_RAW" | grep -oE '[0-9]+s' | tr -d s || true); S=${S:-0}
           if [ "$H" = 0 ] && [ "$M" = 0 ] && [ "$S" = 0 ]; then
-            # nếu người dùng ghi "1800" hay "120" thì hiểu là giây
-            if [[ "$DUR_RAW" =~ ^[0-9]+$ ]]; then S="$DUR_RAW"; else M=30; fi
+            [[ "$DUR_RAW" =~ ^[0-9]+$ ]] && S="$DUR_RAW" || M=30
           fi
-          SECS=$(( H*3600 + M*60 + S ))
-          if [ "$SECS" -lt 30 ]; then SECS=30; fi
+          SECS=$((H*3600 + M*60 + S))
+          [ "$SECS" -lt 30 ] && SECS=30
 
           echo "url=$URL"      >> "$GITHUB_OUTPUT"
           echo "dur_str=$DUR_RAW" >> "$GITHUB_OUTPUT"
@@ -61,30 +52,29 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
-      - name: Build site (no large files, stream external URL)
+      - name: Build site (download to /f/current.mp3)
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p public
           URL='${{ steps.pick.outputs.url }}'
           DUR='${{ steps.pick.outputs.dur_str }}'
+          mkdir -p public/f
+          echo "⬇️  Downloading: $URL"
+          curl -L --fail --retry 3 "$URL" -o public/f/current.mp3
 
+          # Trang chính phát current.mp3
           cat > public/index.html <<HTML
           <!doctype html>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width,initial-scale=1">
           <title>🎧 MusicBu Radio</title>
-          <h1 style="font-family:system-ui; color:#58a6ff">🎧 MusicBu Radio</h1>
-          <p>Now playing:</p>
+          <h1 style="font-family:system-ui;color:#58a6ff">🎧 MusicBu Radio</h1>
+          <p>Now playing (stable link): <code>/musicbu/f/current.mp3</code></p>
           <audio controls autoplay style="width:100%;max-width:720px">
-            <source src="${URL}" type="audio/mpeg">
+            <source src="./f/current.mp3" type="audio/mpeg">
           </audio>
           <p>⏱ Duration: <b>${DUR}</b></p>
-          <p><small>Tự random bài khác khi hết thời lượng.</small></p>
-          <style>
-            body{font-family:system-ui,Segoe UI,Roboto,Arial;background:#0d1117;color:#c9d1d9;padding:24px;max-width:900px;margin:auto}
-            a{color:#58a6ff;text-decoration:none}
-          </style>
+          <style>body{font-family:system-ui,Segoe UI,Roboto,Arial;background:#0d1117;color:#c9d1d9;padding:24px;max-width:900px;margin:auto}</style>
           HTML
 
       - name: Upload Pages artifact
@@ -98,7 +88,7 @@ jobs:
 
       - name: Sleep until next track
         run: |
-          echo "Ngủ ${{ steps.pick.outputs.secs }} giây…"
+          echo "Sleeping ${{ steps.pick.outputs.secs }} seconds…"
           sleep ${{ steps.pick.outputs.secs }}
 
       - name: Dispatch next run
@@ -111,4 +101,4 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/$REPO/dispatches \
             -d '{"event_type":"rotate"}'
-          echo "Đã gọi vòng tiếp theo."
+          echo "Next rotation dispatched."
