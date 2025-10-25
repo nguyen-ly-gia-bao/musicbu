@@ -1,0 +1,85 @@
+name: Rotate MP3 (no PAT)
+
+on:
+  workflow_dispatch:
+    inputs:
+      filename:
+        description: "Đường dẫn file cần đổi (vd: f/xz8cvuf.mp3)"
+        required: false
+        default: ""
+      dir:
+        description: "Thư mục chứa mp3"
+        required: false
+        default: "f"
+      hexlen:
+        description: "Độ dài tên ngẫu nhiên (hex*2 ký tự); 12 = 12 ký tự"
+        required: false
+        default: "12"
+
+permissions:
+  contents: write
+
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Chọn file cần đổi
+        id: pick
+        shell: bash
+        run: |
+          DIR="${{ github.event.inputs.dir }}"
+          FILENAME="${{ github.event.inputs.filename }}"
+          if [ -z "$FILENAME" ]; then
+            mapfile -t FILES < <(find "$DIR" -maxdepth 1 -type f -name "*.mp3")
+            if [ ${#FILES[@]} -eq 0 ]; then
+              echo "Không thấy file .mp3 nào trong $DIR"; exit 1
+            fi
+            IDX=$((RANDOM % ${#FILES[@]}))
+            FILENAME="${FILES[$IDX]}"
+          fi
+          echo "target=$FILENAME" >> $GITHUB_OUTPUT
+
+      - name: Sinh tên ngẫu nhiên
+        id: gen
+        shell: bash
+        run: |
+          L=${{ github.event.inputs.hexlen }}
+          python3 - <<PY > newname.txt
+import secrets,sys
+L = int("${{ github.event.inputs.hexlen }}" or "12")
+n = max(6, L//2)
+print(secrets.token_hex(n)+".mp3")
+PY
+          NEWBASE=$(cat newname.txt)
+          echo "new=$NEWBASE" >> $GITHUB_OUTPUT
+
+      - name: Đổi tên file
+        shell: bash
+        env:
+          GIT_COMMITTER_NAME: "github-actions[bot]"
+          GIT_COMMITTER_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
+        run: |
+          set -e
+          OLD="${{ steps.pick.outputs.target }}"
+          NEWDIR="$(dirname "$OLD")"
+          NEWBASE="${{ steps.gen.outputs.new }}"
+          NEW="$NEWDIR/$NEWBASE"
+          echo "Đổi tên: $OLD -> $NEW"
+          git config user.name "$GIT_COMMITTER_NAME"
+          git config user.email "$GIT_COMMITTER_EMAIL"
+          git mv "$OLD" "$NEW"
+          echo "$NEW" > "$NEWDIR/current.txt"
+          git add -A
+          git commit -m "Rotate mp3: $OLD -> $NEW"
+          git push
+
+      - name: In kết quả
+        shell: bash
+        run: |
+          echo "✅ Đã đổi xong!"
+          echo "File mới: $(cat f/current.txt)"
