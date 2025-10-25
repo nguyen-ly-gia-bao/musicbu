@@ -1,69 +1,114 @@
-name: MusicBu Radio Infinite (fixed)
+name: MusicBu Cloud Radio (random by duration)
 
 on:
   workflow_dispatch:
+  repository_dispatch:
+    types: [rotate]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: musicbu-radio
+  cancel-in-progress: true
 
 jobs:
   radio:
     runs-on: ubuntu-latest
-    timeout-minutes: 4320  # chạy tối đa 3 ngày liên tục
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Start Radio
+      - name: Pick 1 random track from playlist
+        id: pick
+        shell: bash
         run: |
+          set -euo pipefail
           FILE="playlist.txt"
-          if [ ! -f "$FILE" ]; then
-            echo "playlist.txt not found!"
-            exit 1
+          if [ ! -s "$FILE" ]; then
+            echo "playlist.txt không tồn tại hoặc rỗng."; exit 1
           fi
 
-          mkdir -p public/f
+          # Lấy 1 dòng ngẫu nhiên
+          LINE=$(shuf -n 1 "$FILE")
 
-          echo "🎧 MusicBu Radio started"
-          while true; do
-            echo "🎲 Chọn ngẫu nhiên 1 bài..."
-            TOTAL=$(grep -c . "$FILE")
-            LINE=$(shuf -n 1 "$FILE")
+          # Cắt url | duration
+          URL=$(echo "$LINE" | cut -d'|' -f1 | xargs)
+          DUR_RAW=$(echo "$LINE" | cut -d'|' -f2 | xargs || true)
 
-            URL=$(echo "$LINE" | cut -d'|' -f1 | xargs)
-            DUR=$(echo "$LINE" | cut -d'|' -f2 | xargs)
+          # Mặc định 30 phút nếu thiếu duration
+          if [ -z "${DUR_RAW:-}" ]; then DUR_RAW="30m"; fi
 
-            if [ -z "$DUR" ]; then
-              DUR="30m"
-            fi
+          # Chuyển về giây (h, m, s)
+          H=$(echo "$DUR_RAW" | grep -oE '[0-9]+h' | tr -d 'h' || true); H=${H:-0}
+          M=$(echo "$DUR_RAW" | grep -oE '[0-9]+m' | tr -d 'm' || true); M=${M:-0}
+          S=$(echo "$DUR_RAW" | grep -oE '[0-9]+s' | tr -d 's' || true); S=${S:-0}
+          if [ "$H" = 0 ] && [ "$M" = 0 ] && [ "$S" = 0 ]; then
+            # nếu người dùng ghi "1800" hay "120" thì hiểu là giây
+            if [[ "$DUR_RAW" =~ ^[0-9]+$ ]]; then S="$DUR_RAW"; else M=30; fi
+          fi
+          SECS=$(( H*3600 + M*60 + S ))
+          if [ "$SECS" -lt 30 ]; then SECS=30; fi
 
-            # chuyển thời lượng thành giây
-            H=$(echo $DUR | grep -oE '[0-9]+h' | tr -d 'h')
-            M=$(echo $DUR | grep -oE '[0-9]+m' | tr -d 'm')
-            S=$(echo $DUR | grep -oE '[0-9]+s' | tr -d 's')
-            H=${H:-0}; M=${M:-0}; S=${S:-0}
-            SECS=$((H*3600 + M*60 + S))
+          echo "url=$URL"      >> "$GITHUB_OUTPUT"
+          echo "dur_str=$DUR_RAW" >> "$GITHUB_OUTPUT"
+          echo "secs=$SECS"    >> "$GITHUB_OUTPUT"
 
-            echo "🎵 Phát bài: $URL (⏱ $DUR = $SECS giây)"
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
 
-            cat > public/index.html <<HTML
-            <!DOCTYPE html>
-            <html><meta charset="utf-8">
-            <body style="background:#0d1117;color:#c9d1d9;text-align:center;font-family:Segoe UI,Roboto,Arial">
-            <h2>🎧 MusicBu Radio</h2>
-            <p>Đang phát:</p>
-            <audio controls autoplay style="width:80%;margin-top:10px;border-radius:12px">
-              <source src="$URL" type="audio/mpeg">
-            </audio>
-            <p>⏱ Thời lượng: <b>$DUR</b></p>
-            <p><small>Tự động đổi bài khi hết thời lượng.</small></p>
-            </body></html>
-            HTML
+      - name: Build site (no large files, stream external URL)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p public
+          URL='${{ steps.pick.outputs.url }}'
+          DUR='${{ steps.pick.outputs.dur_str }}'
 
-            git config user.name "MusicBu Bot"
-            git config user.email "bot@github.com"
-            git add public/index.html
-            git commit -m "🎵 Now playing: $URL ($DUR)" || true
-            git push origin main
+          cat > public/index.html <<HTML
+          <!doctype html>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1">
+          <title>🎧 MusicBu Radio</title>
+          <h1 style="font-family:system-ui; color:#58a6ff">🎧 MusicBu Radio</h1>
+          <p>Now playing:</p>
+          <audio controls autoplay style="width:100%;max-width:720px">
+            <source src="${URL}" type="audio/mpeg">
+          </audio>
+          <p>⏱ Duration: <b>${DUR}</b></p>
+          <p><small>Tự random bài khác khi hết thời lượng.</small></p>
+          <style>
+            body{font-family:system-ui,Segoe UI,Roboto,Arial;background:#0d1117;color:#c9d1d9;padding:24px;max-width:900px;margin:auto}
+            a{color:#58a6ff;text-decoration:none}
+          </style>
+          HTML
 
-            echo "⏳ Ngủ $SECS giây để phát xong bài..."
-            sleep $SECS
-          done
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./public
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+      - name: Sleep until next track
+        run: |
+          echo "Ngủ ${{ steps.pick.outputs.secs }} giây…"
+          sleep ${{ steps.pick.outputs.secs }}
+
+      - name: Dispatch next run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          curl -sS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/$REPO/dispatches \
+            -d '{"event_type":"rotate"}'
+          echo "Đã gọi vòng tiếp theo."
