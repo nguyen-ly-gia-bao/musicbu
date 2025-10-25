@@ -1,4 +1,5 @@
-name: MusicBu Radio Infinite (auto random by duration)
+
+            mkdir -name: MusicBu Radio Infinite (fixed)
 
 on:
   workflow_dispatch:
@@ -9,33 +10,59 @@ jobs:
     timeout-minutes: 4320  # chạy tối đa 3 ngày liên tục
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run infinite radio
+      - name: Start Radio
         run: |
           FILE="playlist.txt"
-          if [ ! -f "$FILE" ]; then
-            echo "playlist.txt not found!"
-            exit 1
-          fi
+          [ ! -f "$FILE" ] && echo "playlist.txt not found!" && exit 1
 
           mkdir -p public/f
 
+          echo "🎧 MusicBu Radio started"
           while true; do
-            echo "🎲 Chọn ngẫu nhiên 1 bài trong playlist..."
-            LINES=$(wc -l < "$FILE")
-            PICK=$(( RANDOM % LINES + 1 ))
-            LINE=$(sed -n "${PICK}p" "$FILE")
+            echo "🎲 Chọn ngẫu nhiên 1 bài..."
+            TOTAL=$(grep -c . "$FILE")
+            LINE=$(shuf -n 1 "$FILE")
+
             URL=$(echo "$LINE" | cut -d'|' -f1 | xargs)
             DUR=$(echo "$LINE" | cut -d'|' -f2 | xargs)
 
-            # Nếu thiếu thời lượng thì mặc định 30 phút
             [ -z "$DUR" ] && DUR="30m"
 
-            echo "🎵 Phát bài: $URL  (⏱ Thời lượng: $DUR)"
+            # chuyển thời lượng thành giây
+            H=$(echo $DUR | grep -oE '[0-9]+h' | tr -d 'h')
+            M=$(echo $DUR | grep -oE '[0-9]+m' | tr -d 'm')
+            S=$(echo $DUR | grep -oE '[0-9]+s' | tr -d 's')
+            H=${H:-0}; M=${M:-0}; S=${S:-0}
+            SECS=$((H*3600 + M*60 + S))
 
-            mkdir -p public
+            echo "🎵 Phát bài: $URL (⏱ $DUR = $SECS giây)"
+
+            cat > public/index.html <<HTML
+            <!DOCTYPE html>
+            <html><meta charset="utf-8">
+            <body style="background:#0d1117;color:#c9d1d9;text-align:center;font-family:Segoe UI,Roboto,Arial">
+            <h2>🎧 MusicBu Radio</h2>
+            <p>Đang phát:</p>
+            <audio controls autoplay style="width:80%;margin-top:10px;border-radius:12px">
+              <source src="$URL" type="audio/mpeg">
+            </audio>
+            <p>⏱ Thời lượng: <b>$DUR</b></p>
+            <p><small>Tự động đổi bài khi hết thời lượng.</small></p>
+            </body></html>
+            HTML
+
+            git config user.name "MusicBu Bot"
+            git config user.email "bot@github.com"
+            git add public/index.html
+            git commit -m "🎵 Now playing: $URL ($DUR)" || true
+            git push origin main
+
+            echo "⏳ Ngủ $SECS giây để phát xong bài..."
+            sleep $SECS
+          done public
             cat > public/index.html <<HTML
             <!DOCTYPE html>
             <meta charset="utf-8">
