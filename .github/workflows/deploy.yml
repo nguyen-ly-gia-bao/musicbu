@@ -1,0 +1,23 @@
+name: Fetch MP3 and Deploy
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Download MP3 from source_url.txt
+        run: |
+          mkdir -p public/f
+          url=$(cat source_url.txt)
+          filename=$(basename "$url")
+          curl -L "$url" -o "public/f/$filename"
+
+      - name: Upload to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
