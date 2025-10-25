@@ -1,23 +1,42 @@
 name: Fetch MP3 and Deploy
+
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'source_url.txt'
+      - '.github/workflows/deploy.yml'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Download MP3 from source_url.txt
+      - name: Read source URL
+        id: readurl
+        run: |
+          URL=$(tr -d '\r' < source_url.txt | head -n1)
+          if [ -z "$URL" ]; then
+            echo "source_url.txt is empty"; exit 1
+          fi
+          echo "url=$URL" >> $GITHUB_OUTPUT
+
+      - name: Download MP3 to fixed path
         run: |
           mkdir -p public/f
-          url=$(cat source_url.txt)
-          filename=$(basename "$url")
-          curl -L "$url" -o "public/f/$filename"
+          curl -L "${{ steps.readurl.outputs.url }}" -o "public/f/xz8cvuf.mp3"
 
-      - name: Upload to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
+      - name: Upload artifact to Pages
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./public
+          path: ./public
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
