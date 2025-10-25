@@ -1,10 +1,7 @@
-name: Fetch & Rotate MP3 (no PAT)
+name: Fetch & Rotate MP3 (DEBUG)
 
 on:
-  workflow_dispatch: {}   # chạy tay
-  # muốn tự chạy theo giờ thì mở cron:
-  # schedule:
-  #   - cron: "*/30 * * * *"   # mỗi 30 phút
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -18,13 +15,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Đảm bảo có thư mục f/
+      - name: Ensure folder f/
         run: mkdir -p f
 
-      - name: Lấy URL nguồn (ưu tiên dòng 1 của playlist.txt, fallback source_url.txt)
+      - name: Pick source URL (playlist.txt line 1, fallback source_url.txt)
         id: src
         shell: bash
         run: |
+          set -e
           URL=""
           if [ -f playlist.txt ]; then
             URL=$(sed -n '1p' playlist.txt | tr -d '\r')
@@ -32,48 +30,57 @@ jobs:
           if [ -z "$URL" ] && [ -f source_url.txt ]; then
             URL=$(sed -n '1p' source_url.txt | tr -d '\r')
           fi
+          echo "URL=$URL"
           if [ -z "$URL" ]; then
-            echo "❌ Không tìm thấy URL trong playlist.txt/source_url.txt"; exit 1
+            echo "::error::Không tìm thấy URL trong playlist.txt/source_url.txt"
+            exit 1
           fi
           echo "url=$URL" >> $GITHUB_OUTPUT
-          echo "Nguồn: $URL"
 
-      - name: Tải MP3 từ nguồn
+      - name: CURL DEBUG (show headers + HTTP code)
         shell: bash
         run: |
-          curl -L --fail --retry 3 "${{ steps.src.outputs.url }}" -o fetched.mp3
-          SZ=$(wc -c < fetched.mp3)
-          echo "Size: $SZ bytes"
+          set -e
+          URL='${{ steps.src.outputs.url }}'
+          echo "Trying to fetch: $URL"
+          curl -I -L -A "Mozilla/5.0 (GitHubActions)" "$URL" || true
+
+      - name: Download MP3
+        shell: bash
+        run: |
+          set -e
+          URL='${{ steps.src.outputs.url }}'
+          # thêm UA + theo redirect, hiển thị tiến trình
+          curl -L --retry 3 --connect-timeout 20 -A "Mozilla/5.0 (GitHubActions)" "$URL" -o fetched.mp3
+          SZ=$(wc -c < fetched.mp3 || echo 0)
+          echo "Downloaded size: $SZ bytes"
           if [ "$SZ" -lt 10240 ]; then
-            echo "❌ File quá nhỏ (có thể tải lỗi)"; exit 1
+            echo "::error::File tải về quá nhỏ ($SZ bytes) -> có thể bị chặn/403/URL sai"
+            exit 1
           fi
 
-      - name: Đổi tên ngẫu nhiên + xóa file cũ trong f/
-        id: rotate
-        shell: bash
+      - name: Rotate (random rename, remove old)
         env:
           GIT_COMMITTER_NAME: "github-actions[bot]"
           GIT_COMMITTER_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
+        shell: bash
         run: |
+          set -e
           NEW="f/$(python3 - <<'PY'
 import secrets; print(secrets.token_hex(6)+".mp3")
 PY
 )"
-          echo "Tên mới: $NEW"
-          # xóa mp3 cũ
+          echo "New file: $NEW"
           git rm -f f/*.mp3 2>/dev/null || true
-          # move file mới
           mv fetched.mp3 "$NEW"
-          # cập nhật current.txt
           echo "$NEW" > f/current.txt
-
           git config user.name "$GIT_COMMITTER_NAME"
           git config user.email "$GIT_COMMITTER_EMAIL"
           git add -A
           git commit -m "Fetch & rotate -> $NEW" || echo "No changes"
           git push
 
-      - name: In URL mới
+      - name: Output URL
         shell: bash
         run: |
           REPO="${{ github.repository }}"
@@ -81,4 +88,4 @@ PY
           NAME="${REPO##*/}"
           CUR=$(cat f/current.txt)
           echo "✅ File mới: $CUR"
-          echo "➡️  URL: https://$USER.github.io/$NAME/$CUR"
+          echo "➡️ URL: https://$USER.github.io/$NAME/$CUR"
