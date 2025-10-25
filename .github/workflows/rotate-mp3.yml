@@ -1,43 +1,84 @@
-name: Rotate Link (rename current mp3)
+name: Fetch & Rotate MP3 (no PAT)
 
 on:
-  workflow_dispatch:
-    inputs:
-      filename:
-        description: "File cần đổi (vd: f/xz8cvuf.mp3). Để trống sẽ chọn file mp3 đầu tiên trong f/"
-        required: false
-        default: ""
+  workflow_dispatch: {}   # chạy tay
+  # muốn tự chạy theo giờ thì mở cron:
+  # schedule:
+  #   - cron: "*/30 * * * *"   # mỗi 30 phút
 
 permissions:
   contents: write
 
 jobs:
-  rotate:
+  fetch_rotate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Pick target
-        id: pick
+      - name: Đảm bảo có thư mục f/
+        run: mkdir -p f
+
+      - name: Lấy URL nguồn (ưu tiên dòng 1 của playlist.txt, fallback source_url.txt)
+        id: src
+        shell: bash
         run: |
-          F="${{ github.event.inputs.filename }}"
-          if [ -z "$F" ]; then
-            F=$(ls -1 f/*.mp3 2>/dev/null | head -n1)
+          URL=""
+          if [ -f playlist.txt ]; then
+            URL=$(sed -n '1p' playlist.txt | tr -d '\r')
           fi
-          if [ -z "$F" ]; then echo "No mp3 in f/"; exit 1; fi
-          echo "target=$F" >> $GITHUB_OUTPUT
+          if [ -z "$URL" ] && [ -f source_url.txt ]; then
+            URL=$(sed -n '1p' source_url.txt | tr -d '\r')
+          fi
+          if [ -z "$URL" ]; then
+            echo "❌ Không tìm thấy URL trong playlist.txt/source_url.txt"; exit 1
+          fi
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "Nguồn: $URL"
 
-      - name: Generate new name & rename
+      - name: Tải MP3 từ nguồn
+        shell: bash
+        run: |
+          curl -L --fail --retry 3 "${{ steps.src.outputs.url }}" -o fetched.mp3
+          SZ=$(wc -c < fetched.mp3)
+          echo "Size: $SZ bytes"
+          if [ "$SZ" -lt 10240 ]; then
+            echo "❌ File quá nhỏ (có thể tải lỗi)"; exit 1
+          fi
+
+      - name: Đổi tên ngẫu nhiên + xóa file cũ trong f/
+        id: rotate
+        shell: bash
+        env:
+          GIT_COMMITTER_NAME: "github-actions[bot]"
+          GIT_COMMITTER_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
         run: |
           NEW="f/$(python3 - <<'PY'
 import secrets; print(secrets.token_hex(6)+".mp3")
 PY
 )"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git mv "${{ steps.pick.outputs.target }}" "$NEW"
+          echo "Tên mới: $NEW"
+          # xóa mp3 cũ
+          git rm -f f/*.mp3 2>/dev/null || true
+          # move file mới
+          mv fetched.mp3 "$NEW"
+          # cập nhật current.txt
           echo "$NEW" > f/current.txt
+
+          git config user.name "$GIT_COMMITTER_NAME"
+          git config user.email "$GIT_COMMITTER_EMAIL"
           git add -A
-          git commit -m "Rotate link: ${{ steps.pick.outputs.target }} -> $NEW"
+          git commit -m "Fetch & rotate -> $NEW" || echo "No changes"
           git push
+
+      - name: In URL mới
+        shell: bash
+        run: |
+          REPO="${{ github.repository }}"
+          USER="${REPO%%/*}"
+          NAME="${REPO##*/}"
+          CUR=$(cat f/current.txt)
+          echo "✅ File mới: $CUR"
+          echo "➡️  URL: https://$USER.github.io/$NAME/$CUR"
