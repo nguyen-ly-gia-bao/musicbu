@@ -1,40 +1,67 @@
-name: Radio MP3 (permanent random link)
+name: MusicBu Radio Infinite (auto random by duration)
 
 on:
   workflow_dispatch:
-  repository_dispatch:
-    types: [rotate]
-
-permissions:
-  contents: write
-  pages: write
-  id-token: write
-
-concurrency:
-  group: "musicbu-radio"
-  cancel-in-progress: true
 
 jobs:
   radio:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 4320  # chạy tối đa 3 ngày liên tục
+
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      # chọn 1 bài ngẫu nhiên từ playlist (ưu tiên bài chưa phát, tránh lặp ngay)
-      - name: Pick random track
-        id: pick
-        shell: bash
+      - name: Run infinite radio
         run: |
-          set -euo pipefail
           FILE="playlist.txt"
-          [ -f "$FILE" ] || { echo "playlist.txt not found"; exit 1; }
+          if [ ! -f "$FILE" ]; then
+            echo "playlist.txt not found!"
+            exit 1
+          fi
 
-          HIST=".radio_history.json"; [ -s "$HIST" ] || echo '[]' > "$HIST"
-          LAST_URL=$(jq -r '.[-1].url // ""' "$HIST")
+          mkdir -p public/f
+
+          while true; do
+            echo "🎲 Chọn ngẫu nhiên 1 bài trong playlist..."
+            LINES=$(wc -l < "$FILE")
+            PICK=$(( RANDOM % LINES + 1 ))
+            LINE=$(sed -n "${PICK}p" "$FILE")
+            URL=$(echo "$LINE" | cut -d'|' -f1 | xargs)
+            DUR=$(echo "$LINE" | cut -d'|' -f2 | xargs)
+
+            # Nếu thiếu thời lượng thì mặc định 30 phút
+            [ -z "$DUR" ] && DUR="30m"
+
+            echo "🎵 Phát bài: $URL  (⏱ Thời lượng: $DUR)"
+
+            mkdir -p public
+            cat > public/index.html <<HTML
+            <!DOCTYPE html>
+            <meta charset="utf-8">
+            <title>🎧 MusicBu Radio</title>
+            <body style="font-family:system-ui,Segoe UI,Roboto,Arial;padding:40px;background:#0d1117;color:#c9d1d9;text-align:center">
+              <h1 style="color:#58a6ff">🎧 MusicBu Radio</h1>
+              <p>Now Playing:</p>
+              <audio controls autoplay style="width:90%;margin-top:10px;border-radius:12px">
+                <source src="${URL}" type="audio/mpeg">
+              </audio>
+              <p>⏱ Duration: <b>${DUR}</b></p>
+              <hr>
+              <p><small>Next track will random automatically after duration ends.</small></p>
+            </body>
+            HTML
+
+            # Deploy ra site
+            git config user.name "MusicBu Bot"
+            git config user.email "bot@github.com"
+            git add public/index.html
+            git commit -m "🎵 Update track: $URL ($DUR)" || true
+            git push origin main
+
+            echo "⏳ Đang chờ hết thời lượng..."
+            sleep $(echo $DUR | sed 's/h/*3600+/;s/m/*60+/;s/s/+/' | bc)
+          done          LAST_URL=$(jq -r '.[-1].url // ""' "$HIST")
 
           mapfile -t LINES < <(grep -ve '^[[:space:]]*$' "$FILE")
           [ ${#LINES[@]} -gt 0 ] || { echo "playlist empty"; exit 1; }
