@@ -1,4 +1,4 @@
-name: Radio MP3 (unlimited + auto daily reset)
+name: Radio MP3 (unlimited + daily reset + versioned files + now/history)
 
 on:
   workflow_dispatch:
@@ -24,29 +24,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      # --- Reset lịch sử mỗi 24h ---
       - name: Daily reset (clear play history every 24h)
-        id: reset
         shell: bash
         run: |
           set -euo pipefail
           STATE=".radio_state.json"
           HIST=".radio_history.json"
           NOW=$(date +%s)
-
-          # init files if missing
           [ -s "$STATE" ] || echo '{"last_reset":0}' > "$STATE"
-          [ -s "$HIST" ]  || echo '[]' > "$HIST"
-
+          [ -s "$HIST"  ] || echo '[]' > "$HIST"
           LAST_RESET=$(jq -r '.last_reset // 0' "$STATE")
-          ELAPSED=$(( NOW - LAST_RESET ))
-
-          echo "Last reset at: $LAST_RESET, elapsed: ${ELAPSED}s"
-
-          if [ "$ELAPSED" -ge 86400 ]; then
-            echo "24h passed → resetting play history."
+          if [ $((NOW - LAST_RESET)) -ge 86400 ]; then
             echo '[]' > "$HIST"
-            jq --argjson now "$NOW" '.last_reset = $now' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
-
+            jq --argjson now "$NOW" '.last_reset=$now' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
             git config user.name  "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add "$STATE" "$HIST"
@@ -54,44 +45,38 @@ jobs:
             git push || true
           fi
 
+      # --- Chọn bài (ưu tiên bài mới, tránh lặp ngay) ---
       - name: Pick track (prefer NEW, avoid immediate repeat)
         id: pick
         shell: bash
         run: |
           set -euo pipefail
           FILE="playlist.txt"
-          [ ! -f "$FILE" ] && echo "playlist.txt not found!" && exit 1
-
-          HIST=".radio_history.json"
-          [ -s "$HIST" ] || echo '[]' > "$HIST"
+          [ ! -f "$FILE" ] && { echo "playlist.txt not found"; exit 1; }
+          HIST=".radio_history.json"; [ -s "$HIST" ] || echo '[]' > "$HIST"
           LAST_URL=$(jq -r '.[-1].url // ""' "$HIST")
-
           mapfile -t LINES < <(grep -ve '^[[:space:]]*$' "$FILE")
-          [ "${#LINES[@]}" -lt 1 ] && echo "playlist is empty" && exit 1
+          [ ${#LINES[@]} -lt 1 ] && { echo "playlist is empty"; exit 1; }
 
-          get_url () { echo "$1" | cut -d'|' -f1 | xargs; }
-          get_dur () { echo "$1" | cut -d'|' -f2 | xargs || true; }
+          get_url(){ echo "$1" | cut -d'|' -f1 | xargs; }
+          get_dur(){ echo "$1" | cut -d'|' -f2 | xargs || true; }
 
           mapfile -t PLAYED < <(jq -r '.[].url' "$HIST")
-
           NEW_POOL=()
           for L in "${LINES[@]}"; do
-            U="$(get_url "$L")"
-            FOUND=0
-            for P in "${PLAYED[@]}"; do [ "$U" = "$P" ] && FOUND=1 && break; done
-            [ $FOUND -eq 0 ] && NEW_POOL+=("$L")
+            U=$(get_url "$L"); F=0
+            for P in "${PLAYED[@]}"; do [ "$U" = "$P" ] && F=1 && break; done
+            [ $F -eq 0 ] && NEW_POOL+=("$L")
           done
 
-          choose () {
-            local -a POOL=("$@"); local N=${#POOL[@]}
+          choose(){
+            local -a P=("$@"); local N=${#P[@]}
             [ $N -eq 0 ] && return 1
             if [ $N -gt 1 ] && [ -n "$LAST_URL" ]; then
-              TMP=()
-              for L in "${POOL[@]}"; do [ "$(get_url "$L")" = "$LAST_URL" ] && continue; TMP+=("$L"); done
-              [ ${#TMP[@]} -gt 0 ] && POOL=("${TMP[@]}")
-              N=${#POOL[@]}
+              T=(); for L in "${P[@]}"; do [ "$(get_url "$L")" = "$LAST_URL" ] && continue; T+=("$L"); done
+              [ ${#T[@]} -gt 0 ] && P=("${T[@]}"); N=${#P[@]}
             fi
-            echo "${POOL[$((RANDOM%N))]}"
+            echo "${P[$((RANDOM%N))]}"
           }
 
           LINE=""
@@ -99,40 +84,76 @@ jobs:
           [ -z "$LINE" ] && LINE="$(choose "${LINES[@]}")"
           [ -z "$LINE" ] && { echo "Cannot pick track"; exit 1; }
 
-          URL="$(get_url "$LINE")"
-          DUR_RAW="$(get_dur "$LINE")"
+          URL=$(get_url "$LINE")
+          DUR_RAW=$(get_dur "$LINE")
 
-          to_seconds () {
-            local STR="$1"; local DEF="180"
-            [ -z "$STR" ] && echo "$DEF" && return
-            local H=$(echo "$STR" | grep -oE '[0-9]+h' | tr -d 'h' || echo 0)
-            local M=$(echo "$STR" | grep -oE '[0-9]+m' | tr -d 'm' || echo 0)
-            local S=$(echo "$STR" | grep -oE '[0-9]+s' | tr -d 's' || echo 0)
-            if [[ "$H" == "0" && "$M" == "0" && "$S" == "0" ]]; then
-              echo "$STR"; return
-            fi
-            echo $((H*3600 + M*60 + S))
+          to_sec(){
+            local S="$1"; local DEF=180
+            [ -z "$S" ] && { echo $DEF; return; }
+            local H=$(echo "$S"|grep -oE '[0-9]+h'|tr -d h||echo 0)
+            local M=$(echo "$S"|grep -oE '[0-9]+m'|tr -d m||echo 0)
+            local X=$(echo "$S"|grep -oE '[0-9]+s'|tr -d s||echo 0)
+            if [[ "$H" = 0 && "$M" = 0 && "$X" = 0 ]]; then echo "$S"; else echo $((H*3600+M*60+X)); fi
           }
 
-          DURATION=$(to_seconds "$DUR_RAW")
-          [ "$DURATION" -lt 30 ] && DURATION=30
+          DURATION=$(to_sec "$DUR_RAW"); [ "$DURATION" -lt 30 ] && DURATION=30
 
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
-          echo "$URL" > .picked_url
-          echo "$DURATION" > .picked_dur
+          echo "dur_str=${DUR_RAW:-180s}" >> "$GITHUB_OUTPUT"
 
-      - name: Build site
+      # --- Tải bài, lưu filename theo thời gian + current.mp3, render index + now.json ---
+      - name: Build site (versioned filename + stable current.mp3 + now.json)
         shell: bash
         run: |
+          set -euo pipefail
+          TS=$(date -u +%Y%m%d-%H%M%S)
+          NEW="track-${TS}.mp3"
           mkdir -p public/f
-          curl -L --fail --retry 3 "${{ steps.pick.outputs.url }}" -o public/f/xz8cvuf.mp3
-          cat > public/index.html <<'HTML'
+          echo "Downloading to public/f/${NEW}"
+          curl -L --fail --retry 3 "${{ steps.pick.outputs.url }}" -o "public/f/${NEW}"
+
+          # Link ổn định cho nhúng/IMVU
+          cp -f "public/f/${NEW}" "public/f/current.mp3"
+
+          # Giữ tối đa 10 file version
+          ls -1t public/f/track-*.mp3 2>/dev/null | awk 'NR>10' | xargs -r rm -f
+
+          # Trang chính
+          cat > public/index.html <<HTML
           <!doctype html>
           <meta charset="utf-8">
-          <title>musicbu</title>
-          <p>🎵 Direct MP3: <a href="./f/xz8cvuf.mp3">/f/xz8cvuf.mp3</a></p>
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>musicbu radio</title>
+          <h1>musicbu radio</h1>
+          <p><b>Now playing</b>: <code>${NEW}</code> (${{
+            steps.pick.outputs.dur_str
+          }})</p>
+          <p><a href="./f/current.mp3">🎵 Direct MP3 (stable)</a></p>
+          <p><a href="./history.html">📜 History</a> · <a href="./now.json">now.json</a> · <a href="./history.json">history.json</a></p>
+          <h3>Recent files</h3>
+          <ul>
+          $(for f in $(ls -1t public/f/track-*.mp3 2>/dev/null | head -10); do b=$(basename "$f"); echo "<li><a href=\"./f/$b\">$b</a></li>"; done)
+          </ul>
+          <style>
+            body{font-family:system-ui,Segoe UI,Roboto,Arial;padding:24px;max-width:760px;margin:auto}
+            code{background:#1113;border-radius:6px;padding:2px 6px}
+            a{text-decoration:none}
+          </style>
           HTML
+
+          # now.json (API công khai)
+          BASE="/musicbu" # đổi nếu repo không phải musicbu
+          cat > public/now.json <<JSON
+          {
+            "file": "${NEW}",
+            "stable_url": "${BASE}/f/current.mp3",
+            "source_url": "${{ steps.pick.outputs.url }}",
+            "duration_seconds": ${{ steps.pick.outputs.duration }},
+            "duration_str": "${{ steps.pick.outputs.dur_str }}",
+            "started_at": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          }
+          JSON
 
       - uses: actions/upload-pages-artifact@v3
         with:
@@ -141,23 +162,67 @@ jobs:
       - uses: actions/deploy-pages@v4
         id: deploy
 
-      - name: Update play history
+      # --- Lưu history (repo) và xuất public history.json + history.html ---
+      - name: Update play history (repo + public JSON/HTML)
         shell: bash
         run: |
-          U=$(cat .picked_url)
-          D=$(cat .picked_dur)
+          set -euo pipefail
+          U="${{ steps.pick.outputs.url }}"
+          D="${{ steps.pick.outputs.duration }}"
           HIST=".radio_history.json"
           [ -s "$HIST" ] || echo '[]' > "$HIST"
           jq --arg url "$U" --arg dur "$D" --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
              '. + [{"url":$url,"duration":($dur|tonumber),"ts":$ts}] | (length>200 ? .[length-200:] : .)' \
              "$HIST" > "$HIST.tmp" && mv "$HIST.tmp" "$HIST"
 
-          git config user.name "github-actions[bot]"
+          # commit lịch sử trong repo (ưu tiên bài mới hoạt động)
+          git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "$HIST"
           git commit -m "Played $U" || true
-          git push
+          git push || true
 
+          # xuất bản public/history.json + history.html
+          mkdir -p public
+          cp "$HIST" public/history.json
+          cat > public/history.html <<'HTML'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>musicbu – History</title>
+          <h1>musicbu – 50 recent plays</h1>
+          <p><a href="./">← Back to Now Playing</a> · <a href="./history.json">history.json</a></p>
+          <table border="1" cellpadding="6" cellspacing="0">
+            <thead><tr><th>#</th><th>Time (UTC)</th><th>Duration</th><th>Source URL</th></tr></thead>
+            <tbody>
+            <!-- rows injected by script -->
+            </tbody>
+          </table>
+          <style>
+            body{font-family:system-ui,Segoe UI,Roboto,Arial;padding:24px;max-width:1000px;margin:auto}
+            table{border-collapse:collapse;width:100%}
+            th,td{font-size:14px}
+            a{text-decoration:none}
+          </style>
+          <script>
+          fetch('./history.json').then(r=>r.json()).then(data=>{
+            const last50 = data.slice(-50).reverse();
+            const rows = last50.map((it,i)=>(
+              `<tr><td>${i+1}</td><td>${it.ts}</td><td>${it.duration}s</td><td><a href="${it.url}" target="_blank">${it.url}</a></td></tr>`
+            )).join('');
+            document.querySelector('tbody').innerHTML = rows || '<tr><td colspan="4">No data</td></tr>';
+          });
+          </script>
+          HTML
+
+      - name: Upload updated now/history pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./public
+
+      - name: Deploy updated now/history pages
+        uses: actions/deploy-pages@v4
+
+      # --- Ngủ đúng thời lượng rồi tự gọi vòng mới ---
       - name: Sleep until next track
         run: |
           echo "Sleeping ${{ steps.pick.outputs.duration }} seconds..."
