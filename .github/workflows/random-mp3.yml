@@ -1,95 +1,63 @@
-name: Random MP3 Rotation
+name: Radio MP3 (continuous by playlist duration)
 
 on:
+  # chạy tay bất cứ khi nào bạn muốn
   workflow_dispatch:
-  schedule:
-    - cron: "*/20 * * * *"   # đổi bài mỗi 20 phút (sửa nếu muốn)
+    inputs:
+      max_hours:
+        description: "Chạy liên tục tối đa bao nhiêu giờ (tối đa ~6h)"
+        required: false
+        default: "6"
+      default_duration:
+        description: "Thời lượng mặc định (giây) nếu dòng playlist không có |duration"
+        required: false
+        default: "180"
+      min_sleep:
+        description: "Thời gian ngủ tối thiểu giữa các lần deploy (giây)"
+        required: false
+        default: "30"
+  # nếu muốn tự khởi động theo lịch, mở comment dòng dưới và chỉnh cron
+  # schedule:
+  #   - cron: "0 * * * *"   # khởi động mỗi giờ
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: "pages"
-  cancel-in-progress: true
+  contents: write   # cần quyền push lên nhánh gh-pages
 
 jobs:
-  rotate:
+  radio:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 360   # tối đa 6 tiếng
+    env:
+      REPO: ${{ github.repository }}
+      TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
-      - name: Pick random track from playlist
-        id: pick
+      - name: Prepare helpers
         shell: bash
         run: |
           set -euo pipefail
-          FILE="playlist.txt"
-          [ ! -f "$FILE" ] && echo "playlist.txt not found!" && exit 1
+          cat > rotate_once.sh <<'BASH'
+          #!/usr/bin/env bash
+          set -euo pipefail
 
-          # Đếm số dòng có nội dung
-          LINES=$(grep -cve '^[[:space:]]*$' "$FILE")
-          [ "$LINES" -lt 1 ] && echo "playlist is empty" && exit 1
+          PLAYLIST="playlist.txt"
+          [ ! -f "$PLAYLIST" ] && echo "playlist.txt not found!" && exit 1
 
-          # Chọn 1 dòng ngẫu nhiên
-          PICK=$(( RANDOM % LINES + 1 ))
-          LINE=$(grep -ve '^[[:space:]]*$' "$FILE" | sed -n "${PICK}p")
+          # Bỏ dòng trống, random 1 dòng
+          mapfile -t LINES < <(grep -ve '^[[:space:]]*$' "$PLAYLIST")
+          CNT=${#LINES[@]}
+          [ "$CNT" -lt 1 ] && echo "playlist is empty" && exit 1
+          IDX=$(( RANDOM % CNT ))
+          LINE="${LINES[$IDX]}"
 
-          URL=$(echo "$LINE" | cut -d'|' -f1 | xargs)
-          DURATION_RAW=$(echo "$LINE" | cut -d'|' -f2 | xargs || true)
+          URL="$(echo "$LINE" | cut -d'|' -f1 | xargs)"
+          DUR_RAW="$(echo "$LINE" | cut -d'|' -f2 | xargs || true)"
 
-          # Chuyển định dạng 1h41m27s / 41m43s thành giây
+          # parse 1h41m27s / 41m43s / 90s / 12m / 2h / or plain seconds
           to_seconds () {
             local STR="$1"
-            [ -z "$STR" ] && echo 180 && return 0
-            local H=$(echo "$STR" | grep -oE '[0-9]+h' | tr -d 'h' || echo 0)
-            local M=$(echo "$STR" | grep -oE '[0-9]+m' | tr -d 'm' || echo 0)
-            local S=$(echo "$STR" | grep -oE '[0-9]+s' | tr -d 's' || echo 0)
-            if [[ "$H" == "0" && "$M" == "0" && "$S" == "0" ]]; then
-              if echo "$STR" | grep -qE '^[0-9]+$'; then
-                echo "$STR"
-                return 0
-              fi
-            fi
-            echo $(( H*3600 + M*60 + S ))
-          }
-
-          DURATION=$(to_seconds "$DURATION_RAW")
-
-          echo "Picked: $URL (duration=${DURATION}s)"
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
-
-      - name: Build site (download chosen mp3)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p public/f
-          curl -L --fail --retry 3 "${{ steps.pick.outputs.url }}" -o public/f/xz8cvuf.mp3
-
-          cat > public/index.html <<'HTML'
-          <!doctype html>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <title>musicbu</title>
-          <h1>musicbu</h1>
-          <p>Direct MP3: <a href="./f/xz8cvuf.mp3">/f/xz8cvuf.mp3</a></p>
-          HTML
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./public
-
-      - name: Deploy to GitHub Pages
-        id: deploy
-        uses: actions/deploy-pages@v4
-
-      - name: Sleep (informational)
-        run: echo "Next scheduled rotation will occur based on the cron."
+            [ -z "$STR" ] && echo "${DEFAULT_DURATION}" && retu_
