@@ -1,0 +1,177 @@
+{
+  "Version": 3,
+  "FileReferences": {
+    "Moc": "mascot.moc3",
+    "Textures": [
+      "textures/000_tex_00_hair_back.png",
+      "textures/001_tex_01_clothing_l.png",
+      "textures/002_tex_01_clothing_r.png",
+      "textures/003_tex_02_clothing_l.png",
+      "textures/004_tex_02_clothing_r.png",
+      "textures/005_tex_03_arm_r_up.png",
+      "textures/006_tex_03_arm_r_lo.png",
+      "textures/007_tex_04_arm_l_up.png",
+      "textures/008_tex_04_arm_l_lo.png",
+      "textures/009_tex_05_clothing.png",
+      "textures/010_tex_06_neck.png",
+      "textures/011_tex_07_clothing.png",
+      "textures/012_tex_08_face_base.png",
+      "textures/013_tex_08_blush_l.png",
+      "textures/014_tex_08_blush_r.png",
+      "textures/015_tex_09_nose.png",
+      "textures/016_tex_10_mouth.png",
+      "textures/017_tex_10_mouth_cavity.png",
+      "textures/018_tex_11_eye_white_l.png",
+      "textures/019_tex_12_eye_white_r.png",
+      "textures/020_tex_13_pupil_l.png",
+      "textures/021_tex_14_pupil_r.png",
+      "textures/022_tex_17_eye_closed_l.png",
+      "textures/023_tex_17_eye_l.png",
+      "textures/024_tex_18_eye_closed_r.png",
+      "textures/025_tex_18_eye_r.png",
+      "textures/026_tex_19_hair_front.png",
+      "textures/027_tex_15_eyebrow_l.png",
+      "textures/028_tex_16_eyebrow_r.png"
+    ],
+    "Physics": "mascot.physics3.json",
+    "DisplayInfo": "mascot.cdi3.json",
+    "Motions": {
+      "Idle": [
+        {
+          "File": "mascot.idle.motion3.json"
+        }
+      ],
+      "Smile": [
+        {
+          "File": "mascot.smile.motion3.json"
+        },
+        {
+          "File": "mascot.smile.motion3.json"
+        }
+      ],
+      "Surprise": [
+        {
+          "File": "mascot.surprise.motion3.json"
+        }
+      ],
+      "Sad": [
+        {
+          "File": "mascot.sad.motion3.json"
+        }
+      ],
+      "Angry": [
+        {
+          "File": "mascot.angry.motion3.json"
+        }
+      ],
+      "Shy": [
+        {
+          "File": "mascot.shy.motion3.json"
+        }
+      ],
+      "Head_yaw": [
+        {
+          "File": "mascot.head_yaw.motion3.json"
+        }
+      ],
+      "Head_pitch": [
+        {
+          "File": "mascot.head_pitch.motion3.json"
+        }
+      ],
+      "Head_roll": [
+        {
+          "File": "mascot.head_roll.motion3.json"
+        }
+      ],
+      "Head_shake": [
+        {
+          "File": "mascot.head_shake.motion3.json"
+        }
+      ],
+      "Body_sway": [
+        {
+          "File": "mascot.body_sway.motion3.json"
+        }
+      ],
+      "Body_bow": [
+        {
+          "File": "mascot.body_bow.motion3.json"
+        }
+      ],
+      "Arms_raise": [
+        {
+          "File": "mascot.arms_raise.motion3.json"
+        }
+      ],
+      "Arms_swing": [
+        {
+          "File": "mascot.arms_swing.motion3.json"
+        }
+      ],
+      "Talk": [
+        {
+          "File": "mascot.talk.motion3.json"
+        }
+      ],
+      "Smirk": [
+        {
+          "File": "mascot.smirk.motion3.json"
+        }
+      ],
+      "Cheek": [
+        {
+          "File": "mascot.cheek.motion3.json"
+        }
+      ],
+      "Look": [
+        {
+          "File": "mascot.look.motion3.json"
+        }
+      ],
+      "Blink": [
+        {
+          "File": "mascot.blink.motion3.json"
+        }
+      ],
+      "Brows": [
+        {
+          "File": "mascot.brows.motion3.json"
+        }
+      ],
+      "Brow_form": [
+        {
+          "File": "mascot.brow_form.motion3.json"
+        }
+      ],
+      "Sweep": [
+        {
+          "File": "mascot.sweep.motion3.json"
+        }
+      ]
+    }
+  },
+  "Groups": [
+    {
+      "Target": "Parameter",
+      "Name": "EyeBlink",
+      "Ids": [
+        "ParamEyeLOpen",
+        "ParamEyeROpen"
+      ]
+    },
+    {
+      "Target": "Parameter",
+      "Name": "LipSync",
+      "Ids": [
+        "ParamMouthOpenY"
+      ]
+    }
+  ],
+  "HitAreas": [
+    {
+      "Id": "08_face_base",
+      "Name": "Head"
+    }
+  ]
+}
