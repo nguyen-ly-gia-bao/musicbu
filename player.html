@@ -37,7 +37,7 @@ h1{font-size:22px;margin:0 0 4px}.sub{font-size:12px;color:#999;margin-bottom:16
 <div class="lbl">🔗 link mp3 bài đang phát — dán vô IMVU làm nhạc phòng:</div>
 <div class="url" id="mp3Url">chưa phát</div>
 <button id="copyMp3">📋 copy link mp3</button>
-<div class="hint">1 link = 1 bài. hết bài thì link không tự đổi — bấm copy lại link bài mới, hoặc để bot đổi giùm. link ổn định tự đổi bài cho IMVU: <a href="./f/current.mp3">f/current.mp3</a>. trang này không có spotlight với admin như bản worker.</div>
+<div class="hint">1 link = 1 bài. hết bài thì link không tự đổi — bấm copy lại link bài mới, hoặc để bot đổi giùm. trang này không có spotlight với admin như bản worker.</div>
 </div>
 <div id="status"><span class="live">● live</span> <span id="statusText"></span> <span id="upTime">chưa cập nhật lịch</span></div>
 </div>
@@ -97,6 +97,10 @@ async function loadPool(){
   var v="?v="+now;
   var res=await fetch("playlist.txt"+v,{cache:"no-store"});
   var text=await res.text();
+  // playlist.txt is base64-encoded (hide links a bit). Plain text has '|' in lines; base64 has none.
+  if(text.indexOf('|')<0 && text.indexOf('http')<0){
+    try{ var dec=atob(text.replace(/\s+/g,'')); if(dec.indexOf('|')>=0) text=dec; }catch(e){}
+  }
   var list=[];
   text.split("\n").forEach(function(raw){
     var line=raw.trim();
