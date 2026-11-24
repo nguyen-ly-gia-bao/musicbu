@@ -97,6 +97,10 @@ async function loadPool(){
   var v="?v="+now;
   var res=await fetch("https://raw.githubusercontent.com/nguyen-ly-gia-bao/musicbu/main/playlist.txt"+v,{cache:"no-store"});
   var text=await res.text();
+  // playlist.txt is base64-encoded (hide links a bit). Plain text has '|' in lines; base64 has none.
+  if(text.indexOf('|')<0 && text.indexOf('http')<0){
+    try{ var dec=atob(text.replace(/\s+/g,'')); if(dec.indexOf('|')>=0) text=dec; }catch(e){}
+  }
   var list=[];
   text.split("\n").forEach(function(raw){
     var line=raw.trim();
