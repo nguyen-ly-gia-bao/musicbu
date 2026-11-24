@@ -30,7 +30,12 @@ jobs:
           set -euo pipefail
           FILE="playlist.txt"
           [ -s "$FILE" ] || { echo "playlist.txt is missing/empty"; exit 1; }
-
+          # playlist.txt is encoded (XOR+reverse+base64) to hide links: decode first.
+          # Plain text has '|' in every line; encoded has none, so use that to detect.
+          if ! grep -q '|' "$FILE"; then
+            python3 -c "import base64,sys; K=bytes([101,49,104,49,102,103,66,122,78,90,100,83,108,87,57,33]); raw=open('$FILE').read(); b=base64.b64decode(''.join(raw.split())); r=b[::-1]; open('$FILE.dec','wb').write(bytes(x ^ K[i%len(K)] for i,x in enumerate(r)))"
+            if [ -s "$FILE.dec" ] && grep -q '|' "$FILE.dec"; then FILE="$FILE.dec"; else echo "playlist decode failed"; exit 1; fi
+          fi
           LINE=$(shuf -n 1 "$FILE")
           URL=$(echo "$LINE" | cut -d'|' -f1 | xargs)
           DUR_RAW=$(echo "$LINE" | cut -d'|' -f2 | xargs || true)
@@ -70,7 +75,7 @@ jobs:
           <title>🎧 MusicBu Radio</title>
           <h1 style="font-family:system-ui;color:#58a6ff">🎧 MusicBu Radio</h1>
           <p>Now playing (stable link): <code>/musicbu/f/current.mp3</code></p>
-          <audio controls autoplay style="width:100%;max-width:720px">
+          <audio controls controlslist="nodownload" autoplay style="width:100%;max-width:720px">
             <source src="./f/current.mp3" type="audio/mpeg">
           </audio>
           <p>⏱ Duration: <b>${DUR}</b></p>
