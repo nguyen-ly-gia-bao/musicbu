@@ -97,9 +97,16 @@ async function loadPool(){
   var v="?v="+now;
   var res=await fetch("playlist.txt"+v,{cache:"no-store"});
   var text=await res.text();
-  // playlist.txt is base64-encoded (hide links a bit). Plain text has '|' in lines; base64 has none.
+  // playlist.txt is encoded (XOR+reverse+base64) to hide links. Plain text has '|' in lines; encoded has none.
   if(text.indexOf('|')<0 && text.indexOf('http')<0){
-    try{ var dec=atob(text.replace(/\s+/g,'')); if(dec.indexOf('|')>=0) text=dec; }catch(e){}
+    try{
+      var _s=atob(text.replace(/\s+/g,''));
+      _s=_s.split('').reverse().join('');
+      var _k=[101,49,104,49,102,103,66,122,78,90,100,83,108,87,57,33].map(function(c){return String.fromCharCode(c);}).join('');
+      var _o='';
+      for(var i=0;i<_s.length;i++) _o+=String.fromCharCode(_s.charCodeAt(i)^_k.charCodeAt(i%_k.length));
+      if(_o.indexOf('|')>=0) text=_o;
+    }catch(e){}
   }
   var list=[];
   text.split("\n").forEach(function(raw){
