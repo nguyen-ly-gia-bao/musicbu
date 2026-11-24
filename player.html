@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MUSICBU — github pages</title>
+<style>
+body{margin:0;background:#0f0f14;color:#eee;font-family:system-ui,-apple-system,sans-serif;display:flex;justify-content:center;padding:24px 12px}
+.box{width:100%;max-width:560px}.card{background:#1a1a22;border-radius:16px;padding:20px;margin-bottom:12px}
+h1{font-size:22px;margin:0 0 4px}.sub{font-size:12px;color:#999;margin-bottom:16px;line-height:1.5}
+#playBtn{display:block;width:100%;padding:16px;border:0;border-radius:999px;background:linear-gradient(135deg,#ff6a00,#ff2d78);color:#fff;font-size:18px;font-weight:bold;cursor:pointer}
+#playBtn.hidden{display:none}#resumeBtn{display:none;width:100%;padding:14px;border:0;border-radius:999px;background:#00c853;color:#fff;font-size:16px;font-weight:bold;cursor:pointer;margin-top:10px}
+#curName{font-size:20px;font-weight:bold;margin:10px 0 4px}#curLine{font-size:13px;color:#aaa;margin-bottom:8px}
+.bar{height:10px;background:#333;border-radius:5px;overflow:hidden;margin:10px 0}.bar>div{height:100%;width:0%;background:#00c853}
+.row{font-size:13px;color:#bbb;padding:5px 0;border-bottom:1px solid #2a2a2a}.row b{color:#eee}
+#status{font-size:12px;color:#888;margin-top:10px}.live{color:#00e676} a{color:#00b0ff}
+.mp3box{margin-top:12px;background:#111;border:1px solid #2a2a2a;border-radius:12px;padding:12px}
+.mp3box .lbl{font-size:12px;color:#999;margin-bottom:6px}
+.mp3box .url{font-size:12px;color:#00e676;word-break:break-all;line-height:1.5}
+.mp3box button{margin-top:8px;padding:10px 16px;border:0;border-radius:999px;background:#222;color:#fff;font-size:13px;font-weight:bold;cursor:pointer;border:1px solid #444}
+.mp3box button:hover{background:#333}
+.mp3box .hint{font-size:11px;color:#888;margin-top:8px;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="box">
+<div class="card">
+<h1>🎧 MUSICBU</h1>
+<div class="sub">bản github pages — nhạc lấy thẳng từ kho, không qua worker. đồng bộ giờ phát theo đồng hồ chung, ai mở cũng nghe cùng 1 bài. link file hiện trong trình duyệt.</div>
+<button id="playBtn">▶ bấm để nghe</button>
+<button id="resumeBtn">▶ bấm để tiếp tục nghe</button>
+<audio id="a" preload="auto"></audio>
+<div id="curName">chưa phát</div><div id="curLine"></div>
+<div class="bar"><div id="barFill"></div></div>
+<div id="nextBox" style="margin-top:10px"></div>
+<div class="mp3box">
+<div class="lbl">🔗 link mp3 bài đang phát — dán vô IMVU làm nhạc phòng:</div>
+<div class="url" id="mp3Url">chưa phát</div>
+<button id="copyMp3">📋 copy link mp3</button>
+<div class="hint">1 link = 1 bài. hết bài thì link không tự đổi — bấm copy lại link bài mới, hoặc để bot đổi giùm. link ổn định tự đổi bài cho IMVU: <a href="./f/current.mp3">f/current.mp3</a>. trang này không có spotlight với admin như bản worker.</div>
+</div>
+<div id="status"><span class="live">● live</span> <span id="statusText"></span> <span id="upTime">chưa cập nhật lịch</span></div>
+</div>
+<div class="card" style="font-size:12px;color:#888;line-height:1.6">cách chạy: trang này tự tính lịch phát trong trình duyệt (xáo bài theo vòng, tua đúng đoạn đang phát), rồi lấy file nhạc trực tiếp từ kho. tới giờ hết bài thì tự chuyển bài kế, mỗi 60 giây tính lại lịch một lần để bắt kịp thêm bài hay chặn link. gặp file lỗi thì tự bỏ qua sang bài kế. playlist gốc + 31 bài custom, trừ link đã chặn.</div>
+</div>
+<script>
+(function(){
+/* ---- lịch phát: y hệt logic worker direct v3, chạy trong trình duyệt ---- */
+function parseDuration(t){
+  if(!t) return 180000;
+  t=t.toString().trim().toLowerCase();
+  var h=t.match(/(\d+)h/), m=t.match(/(\d+)m/), s=t.match(/(\d+)s/), total=0;
+  if(h) total+=parseInt(h[1])*3600;
+  if(m) total+=parseInt(m[1])*60;
+  if(s) total+=parseInt(s[1]);
+  if(!h&&!m&&!s&&!isNaN(parseInt(t))) total=parseInt(t);
+  return (total||180)*1000;
+}
+function mulberry32(seed){
+  var a=seed>>>0;
+  return function(){
+    a|=0; a=(a+0x6D2B79F5)|0;
+    var t=Math.imul(a^(a>>>15),1|a);
+    t=(t+Math.imul(t^(t>>>7),61|t))^t;
+    return ((t^(t>>>14))>>>0)/4294967296;
+  };
+}
+function shuffledOrder(n,seed){
+  var arr=Array.from({length:n},function(_,i){return i;});
+  var rand=mulberry32(seed);
+  for(var i=n-1;i>0;i--){ var j=Math.floor(rand()*(i+1)); var tmp=arr[i]; arr[i]=arr[j]; arr[j]=tmp; }
+  return arr;
+}
+function buildSchedule(pool){
+  var total=0;
+  for(var k=0;k<pool.length;k++) total+=pool[k].durationMs;
+  var N=total>0?Math.floor(Date.now()/total):0;
+  var order=shuffledOrder(pool.length,(N^0x9E3779B9)>>>0);
+  var acc=0, segs=order.map(function(idx){
+    var s={idx:idx,start:acc,end:acc+pool[idx].durationMs};
+    acc+=pool[idx].durationMs; return s;
+  });
+  return {N:N,total:total,segs:segs};
+}
+function trackName(url){
+  try{
+    var u=String(url||""), f=u.split("?")[0].split("/").pop()||"";
+    f=decodeURIComponent(f).replace(/\.(mp3|m4a|wav|flac|ogg)$/i,"");
+    f=f.replace(/[_+]+/g," ").replace(/-+/g," ").replace(/\s+/g," ").trim();
+    return f||"bài hát";
+  }catch(e){ return "bài hát"; }
+}
+var __pool=null, __poolAt=0;
+async function loadPool(){
+  var now=Date.now();
+  if(__pool && now-__poolAt<120000) return __pool;
+  var v="?v="+now;
+  var res=await fetch("playlist.txt"+v,{cache:"no-store"});
+  var text=await res.text();
+  var list=[];
+  text.split("\n").forEach(function(raw){
+    var line=raw.trim();
+    if(!line||line.charAt(0)==="#") return;
+    var parts=line.split("|").map(function(x){return x.trim();});
+    if(!parts[0]) return;
+    list.push({url:parts[0],durationMs:parts[1]?parseDuration(parts[1]):600000,weight:Math.max(1,parseInt(parts[2])||1)});
+  });
+  var custom=[];
+  try{ custom=await (await fetch("custom.json"+v,{cache:"no-store"})).json(); }catch(e){ custom=[]; }
+  if(Array.isArray(custom)){
+    for(var i=0;i<custom.length;i++){
+      var c=custom[i];
+      if(!c||!c.url) continue;
+      list.push({url:String(c.url).trim(),durationMs:(c.durationMs>0)?c.durationMs:(c.duration?parseDuration(c.duration):600000),weight:Math.max(1,parseInt(c.weight)||1),custom:true});
+    }
+  }
+  var skip=new Set();
+  try{ var b=await (await fetch("blocked.json"+v,{cache:"no-store"})).json(); if(Array.isArray(b)) b.forEach(function(u){skip.add(u);}); }catch(e){}
+  try{ var bs=await (await fetch("blocked_stream.json"+v,{cache:"no-store"})).json(); if(Array.isArray(bs)) bs.forEach(function(u){skip.add(u);}); }catch(e){}
+  if(skip.size) list=list.filter(function(t){return !skip.has(t.url);});
+  __pool=list; __poolAt=now;
+  return list;
+}
+function segInfo(pool,s,vongStart){
+  var t=pool[s.idx];
+  return {url:t.url,name:trackName(t.url),startMs:vongStart+s.start,endMs:vongStart+s.end,durationMs:t.durationMs};
+}
+async function getSchedule(){
+  var pool=await loadPool();
+  var sched=buildSchedule(pool);
+  if(!pool.length||!sched.total||!sched.segs.length) return null;
+  var now=Date.now(), pos=now%sched.total, vongStart=now-pos;
+  var curIdx=sched.segs.findIndex(function(s){return pos>=s.start&&pos<s.end;});
+  if(curIdx<0) curIdx=0;
+  var curSeg=sched.segs[curIdx];
+  var cur=segInfo(pool,curSeg,vongStart);
+  cur.elapsedMs=pos-curSeg.start; cur.remainMs=curSeg.end-pos;
+  var next=[];
+  for(var k=curIdx+1;k<sched.segs.length&&next.length<3;k++) next.push(segInfo(pool,sched.segs[k],vongStart));
+  return {ok:true,now:now,vong:{N:sched.N,startMs:vongStart,totalMs:sched.total},current:cur,next:next,spotlight:null};
+}
+
+/* ---- trình phát: y hệt bản direct v3, chỉ khác fetchSched tính tại chỗ ---- */
+var audio=document.getElementById("a");
+var playBtn=document.getElementById("playBtn");
+var resumeBtn=document.getElementById("resumeBtn");
+var mp3UrlEl=document.getElementById("mp3Url");
+var copyBtn=document.getElementById("copyMp3");
+var st={playing:false,curUrl:null,curEndMs:0,clockOff:0,switchTimer:null,skipUntil:{},lastT:-1,stallCount:0};
+function mins(ms){ return Math.floor(ms/60000); }
+function hm(ms){ return new Date(ms).toLocaleString("vi-VN",{timeZone:"Asia/Ho_Chi_Minh",hour:"2-digit",minute:"2-digit"}); }
+function hms(ms){ return new Date(ms).toLocaleString("vi-VN",{timeZone:"Asia/Ho_Chi_Minh",hour:"2-digit",minute:"2-digit",second:"2-digit"}); }
+function setStatus(t){ var s=document.getElementById("statusText"); if(s) s.textContent=t; }
+function showResume(){ resumeBtn.style.display="block"; }
+function hideResume(){ resumeBtn.style.display="none"; }
+function setMp3Url(url){
+  mp3UrlEl.textContent=url||"chưa phát";
+  copyBtn.textContent="📋 copy link mp3";
+}
+function renderNext(j){
+  var nx='<div style="margin-bottom:4px">sắp phát:</div>';
+  (j.next||[]).forEach(function(n){ nx+='<div class="row">• <b>'+n.name+'</b> — '+hm(n.startMs)+'</div>'; });
+  document.getElementById("nextBox").innerHTML=nx;
+  var u=document.getElementById("upTime"); if(u) u.textContent="cập nhật lịch lúc "+hms(j.now);
+}
+function liveSeekOf(t){ return Math.max(0,(Date.now()+st.clockOff-t.startMs)/1000); }
+async function fetchSched(){
+  var j=await getSchedule();
+  if(!j||!j.ok) throw new Error("schedule fail");
+  renderNext(j);
+  return j;
+}
+function scheduleSwitch(target,livePlay){
+  if(st.switchTimer){ clearTimeout(st.switchTimer); st.switchTimer=null; }
+  if(!livePlay) return;
+  var delay=target.endMs-(Date.now()+st.clockOff);
+  if(delay<0){ st.switchTimer=setTimeout(function(){ syncAndPlay(); },1000); return; }
+  if(delay>4*3600*1000) return;
+  st.switchTimer=setTimeout(function(){ syncAndPlay(); },delay);
+}
+function playTrack(t,seekSec){
+  st.curUrl=t.url; st.curEndMs=t.endMs;
+  document.getElementById("curName").textContent="▶ đang phát: "+t.name;
+  setMp3Url(t.url);
+  audio.src=t.url;
+  var seek=seekSec;
+  var onMeta=function(){
+    try{ if(seek>0){ var d=audio.duration||0; if(d>0) audio.currentTime=Math.min(seek,Math.max(0,d-0.5)); } }catch(e){}
+    var p=audio.play(); if(p) p.catch(function(){ showResume(); });
+  };
+  audio.addEventListener("loadedmetadata",onMeta,{once:true});
+  var p0=audio.play(); if(p0) p0.catch(function(){ showResume(); });
+  hideResume();
+}
+function applySchedule(j,force){
+  for(var k in st.skipUntil){ if(Date.now()+st.clockOff>=st.skipUntil[k]) delete st.skipUntil[k]; }
+  var now=Date.now()+st.clockOff;
+  var target=null, livePlay=true;
+  var cur=j.current;
+  if(st.skipUntil[cur.url]&&now<st.skipUntil[cur.url]){
+    var nx=(j.next&&j.next[0])?j.next[0]:null;
+    if(nx){ target=nx; livePlay=now>=nx.startMs; }
+    else{ target=cur; }
+  } else{ target=cur; }
+  var live=liveSeekOf(target);
+  if(!force&&st.curUrl===target.url&&!audio.error){
+    try{ if(audio.duration&&Math.abs(audio.currentTime-live)>15&&live<audio.duration-1) audio.currentTime=live; }catch(e){}
+    scheduleSwitch(target,livePlay);
+    return;
+  }
+  playTrack(target,live);
+  scheduleSwitch(target,livePlay);
+}
+async function syncAndPlay(){
+  try{ var j=await fetchSched(); applySchedule(j,false); setStatus(""); }
+  catch(e){ setStatus("không lấy được lịch, thử lại sau 10 giây..."); setTimeout(function(){ if(st.playing) syncAndPlay(); },10000); }
+}
+copyBtn.addEventListener("click",function(){
+  var url=st.curUrl||"";
+  if(!url) return;
+  var done=function(){ copyBtn.textContent="✅ đã copy!"; };
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(url).then(done).catch(function(){ fallbackCopy(url); done(); });
+  } else{ fallbackCopy(url); done(); }
+});
+function fallbackCopy(text){
+  var ta=document.createElement("textarea");
+  ta.value=text; ta.style.position="fixed"; ta.style.opacity="0";
+  document.body.appendChild(ta); ta.select();
+  try{ document.execCommand("copy"); }catch(e){}
+  document.body.removeChild(ta);
+}
+playBtn.addEventListener("click",function(){
+  st.playing=true; playBtn.classList.add("hidden");
+  setStatus("đang lấy lịch phát...");
+  syncAndPlay();
+  setInterval(function(){ if(st.playing) syncAndPlay(); },60000);
+  setInterval(function(){
+    if(!st.playing||audio.paused||audio.ended) return;
+    if(audio.currentTime===st.lastT){ st.stallCount++; } else{ st.stallCount=0; st.lastT=audio.currentTime; }
+    if(st.stallCount>=2){ st.stallCount=0; setStatus("mạng đứng, đang nối lại..."); syncAndPlay(); }
+  },4000);
+  setInterval(function(){
+    var d=audio.duration||0;
+    if(!d){ document.getElementById("curLine").textContent=""; document.getElementById("barFill").style.width="0%"; return; }
+    var el=audio.currentTime, rem=Math.max(0,d-el);
+    document.getElementById("barFill").style.width=Math.min(100,Math.floor(el/d*100))+"%";
+    if(rem<60) document.getElementById("curLine").textContent="đã phát "+mins(el*1000)+" phút, còn dưới 1 phút";
+    else document.getElementById("curLine").textContent="đã phát "+mins(el*1000)+" phút, còn "+mins(rem*1000)+" phút";
+  },1000);
+});
+resumeBtn.addEventListener("click",function(){ var p=audio.play(); if(p) p.catch(function(){}); hideResume(); });
+audio.addEventListener("error",function(){
+  if(!st.playing) return;
+  if(st.curUrl) st.skipUntil[st.curUrl]=st.curEndMs||(Date.now()+st.clockOff+3600000);
+  setStatus("bài này lỗi, chuyển bài kế...");
+  syncAndPlay();
+});
+audio.addEventListener("ended",function(){
+  if(!st.playing) return;
+  if(st.curUrl) st.skipUntil[st.curUrl]=st.curEndMs||(Date.now()+st.clockOff+3600000);
+  syncAndPlay();
+});
+document.addEventListener("visibilitychange",function(){ if(!document.hidden&&st.playing) syncAndPlay(); });
+})();
+</script>
+</body>
+</html>
